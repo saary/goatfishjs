@@ -20,10 +20,12 @@ var findMin = function(list, iterator) {
   return minItem;
 }
 
-var JsonDB = function(object) {
+var noop = function() {};
+
+var JsonDB = function(filename, callback) {
   this._serializer = JSON;
   this.indexes = {};
-  this.connection = null;
+  this.db = new sqlite3.Database(filename, sqlite3.OPEN_CREATE | sqlite3.OPEN_READWRITE, callback);
 
   var self = this;
 
@@ -68,37 +70,27 @@ var JsonDB = function(object) {
     return min[1]
   }
 
-  function _get_cursor() {
-    if (!self.connection) throw new Error('Cannot proceed without a database connection.');
+  function _serialize(cb) {
+    if (!self.db) throw new Error('Cannot proceed without a database connection.');
 
-    return self.connection.cursor()
+    return self.db.serialize(cb);
   }
 
-  // Create an object from the values retrieved from the database.
-  function _unmarshal(attributes) {
-    return attributes;
-  }
-
-  self.find_one = function(type, parameters) {
+  self.find_one = function(type, parameters, cb) {
     // Return just one item.
-    var generator = cls.find(parameters);
-
-    try:
-        item = generator.next()
-    except StopIteration:
-        item = None
-    return item
+    self.find(type, parameters, cb, true);
   } 
 
-  self.find = function(type, parameters) {
+  self.find = function(type, parameters, cb, first) {
     type = type.toLowerCase();
 
-    // Query the database.
-    var cursor = _get_cursor();
+    var queryMethod = first ? 'get' : 'all';
 
     // If we can use an index, we will offload some of the fields to query
     // to the database, and handle the rest here.
     parameters = parameters || {};
+    cb = cb || noop;
+
     var index = [];
 
     if (parameters.id) {
@@ -111,33 +103,29 @@ var JsonDB = function(object) {
     var table_name = type;
     var statement;
 
-    if (!index) {
-      // Look through every row.
-      statement = util.format('SELECT * FROM %s;', table_name);
-      cursor.execute(statement);
-    }
-    else if (index.length === 1 && index[0] === 'id') {
-      // If the object id is in the parameters, use only that, since it's
-      // the fastest thing we can do.
-      statement = util.format('SELECT * FROM %s WHERE uuid=?;', table_name);
-      cursor.execute(statement, parameters.id);
-      delete parameters.id;
-    }
-    else {
-      statement = util.format('SELECT x.id, x.uuid, x.data FROM %s x INNER JOIN %s y ON x.uuid = y.uuid WHERE %s;', 
-        table_name,
-        table_name + '_' + index.join('_'),
-        index.join(' = ? AND ') + ' = ?');
-          
-      cursor.execute(statement, [parameters[value] for value in index])
-
-      // Delete the (now) unnecessary parameters, because the database
-      // made sure they match.
-      for (var field in index) {
-        delete parameters[field];
+    function findCallback(err, rows) {
+      if (err) {
+        return cb(err);
       }
+
+      if (!util.isArray(rows)) rows = [rows];
+      var items = [];
+      rows.forEach(function(row)) {
+        var item = self._serializer.parse(row.data);
+        var allMatch = true;
+        for (var field in parameters) {
+          if (item[field] !== parameters[field]) {
+            allMatch = false;
+          }
+        }
+
+        if (allMatch) {
+          items.push(item);
+        }
+      });
+
+      cb(null, items);
     }
-    
     for id, uuid, data in cursor:
         loaded_dict = cls._serializer.loads(data.encode("utf-8"))
         loaded_dict["id"] = uuid
@@ -149,6 +137,36 @@ var JsonDB = function(object) {
         else:
             # Otherwise, just return the object.
             yield cls._unmarshal(loaded_dict)
+
+
+    if (!index) {
+      // Look through every row.
+      statement = util.format('SELECT * FROM %s;', table_name);
+      return self.db.run(statement, findCallback);
+    }
+    else if (index.length === 1 && index[0] === 'id') {
+      // If the object id is in the parameters, use only that, since it's
+      // the fastest thing we can do.
+      statement = util.format('SELECT * FROM %s WHERE uuid=?;', table_name);
+      var id = parameters.id;
+      delete parameters.id;
+      return self.db.get(statement, id, findCallback);
+    }
+    else {
+      statement = util.format('SELECT x.id, x.uuid, x.data FROM %s x INNER JOIN %s y ON x.uuid = y.uuid WHERE %s;', 
+        table_name,
+        table_name + '_' + index.join('_'),
+        index.join(' = ? AND ') + ' = ?');
+
+      var paramBindings = index.map(function(field) { return parameters[field]});
+      // Delete the (now) unnecessary parameters, because the database
+      // made sure they match.
+      for (var field in index) {
+        delete parameters[field];
+      }
+          
+      return self.db[queryMethod](statement, paramBindings, findCallback);
+    }
   };
   
   self.initialize = function(type) {
@@ -177,11 +195,6 @@ var JsonDB = function(object) {
       statement = util.format('CREATE INDEX IF NOT EXISTS "%s_index" on %s (%s ASC)',table_name, table_name, fields);
       cursor.execute(statement);
     });
-  };
-
-  self.commit = function() {
-    // Commit to the database.
-    self.connection.commit()
   };
 
   function _populate_index(obj, cursor, table_name, field_names) {
