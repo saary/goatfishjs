@@ -1,7 +1,8 @@
-var sqlite3 = require('sqlite3');
-var uuid = require('uuid');
+var sqlite3 = require('sqlite3').verbose();
+var uuid = require('node-uuid');
 var sets = require('simplesets');
 var util = require('util');
+var async = require('async');
 
 var findMin = function(list, iterator) {
   var m = Number.MAX_VALUE;
@@ -78,10 +79,11 @@ var JsonDB = function(filename, callback) {
 
   self.find_one = function(type, parameters, cb) {
     // Return just one item.
-    self.find(type, parameters, cb, true);
+    self.find(type, parameters, true, cb);
   } 
 
-  self.find = function(type, parameters, cb, first) {
+  self.find = function(type, parameters, first, cb) {
+    if (!type) throw new Error('Missing type parameter');
     type = type.toLowerCase();
 
     var queryMethod = first ? 'get' : 'all';
@@ -90,6 +92,15 @@ var JsonDB = function(filename, callback) {
     // to the database, and handle the rest here.
     parameters = parameters || {};
     cb = cb || noop;
+    if (typeof first === 'function') {
+      cb = first;
+      first = undefined;
+    }
+
+    if (typeof parameters === 'function') {
+      cb = parameters;
+      parameters = undefined;
+    }
 
     var index = [];
 
@@ -105,13 +116,19 @@ var JsonDB = function(filename, callback) {
 
     function findCallback(err, rows) {
       if (err) {
+        console.log('[find] error - ', err); 
+
         return cb(err);
       }
 
+      console.log('[rows]', rows); 
+
       if (!util.isArray(rows)) rows = [rows];
       var items = [];
-      rows.forEach(function(row)) {
+      rows.forEach(function(row) {
         var item = self._serializer.parse(row.data);
+        item.__type = type;
+
         var allMatch = true;
         for (var field in parameters) {
           if (item[field] !== parameters[field]) {
@@ -126,23 +143,17 @@ var JsonDB = function(filename, callback) {
 
       cb(null, items);
     }
-    for id, uuid, data in cursor:
-        loaded_dict = cls._serializer.loads(data.encode("utf-8"))
-        loaded_dict["id"] = uuid
 
-        if parameters:
-            # If there are fields left to match, match them.
-            if all((loaded_dict.get(field, None) == parameters[field]) for field in parameters):
-                yield cls._unmarshal(loaded_dict)
-        else:
-            # Otherwise, just return the object.
-            yield cls._unmarshal(loaded_dict)
+    var action;
 
-
-    if (!index) {
+    if (index.length === 0) {
       // Look through every row.
+
       statement = util.format('SELECT * FROM %s;', table_name);
-      return self.db.run(statement, findCallback);
+      console.log('[find] ', statement); 
+      action = function() {
+        return self.db[queryMethod](statement, findCallback);
+      };
     }
     else if (index.length === 1 && index[0] === 'id') {
       // If the object id is in the parameters, use only that, since it's
@@ -150,7 +161,10 @@ var JsonDB = function(filename, callback) {
       statement = util.format('SELECT * FROM %s WHERE uuid=?;', table_name);
       var id = parameters.id;
       delete parameters.id;
-      return self.db.get(statement, id, findCallback);
+
+      action = function() {
+        return self.db.get(statement, id, findCallback);
+      };
     }
     else {
       statement = util.format('SELECT x.id, x.uuid, x.data FROM %s x INNER JOIN %s y ON x.uuid = y.uuid WHERE %s;', 
@@ -165,39 +179,62 @@ var JsonDB = function(filename, callback) {
         delete parameters[field];
       }
           
-      return self.db[queryMethod](statement, paramBindings, findCallback);
+      action = function() {
+        return self.db[queryMethod](statement, paramBindings, findCallback);
+      };
     }
+
+    _serialize(action);
   };
   
-  self.initialize = function(type) {
+  self.initialize = function(type, indexes, cb) {
     // Create the necessary tables in the database.
+    if (!type) throw new Error('Missing type parameter');
     type = type.toLowerCase();
 
-    var cursor = _get_cursor();
-    cursor.execute(util.format('CREATE TABLE IF NOT EXISTS %s ( "id" INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, "uuid" TEXT NOT NULL, "data" BLOB NOT NULL);', type));
-    cursor.execute(util.format('CREATE UNIQUE INDEX IF NOT EXISTS "%s_uuid_index" on %s (uuid ASC);', type, type));
+    cb = cb || noop;
+    if (typeof indexes === 'function') {
+      cb = indexes;
+      indexes = undefined;
+    }
 
-    if (!self.indexes[type]) self.indexes[type] = [];
+    var actions = [];
+
+    actions.push(
+      self.db.prepare(util.format('CREATE TABLE IF NOT EXISTS %s ( "id" INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, "uuid" TEXT NOT NULL, "data" BLOB NOT NULL);', type))
+      );
+
+    actions.push(
+      self.db.prepare(util.format('CREATE UNIQUE INDEX IF NOT EXISTS "%s_uuid_index" on %s (uuid ASC);', type, type))
+      );
+
+    self.indexes[type] = indexes || [];
 
     self.indexes[type].forEach(function(index) {
       // Create an index table.
       var table_name = util.format('%s_%s', type,  index.join('_'));
-      var statement = 'CREATE TABLE IF NOT EXISTS %s ( "uuid" TEXT NOT NULL '+ table_name;
+      var statement = util.format('CREATE TABLE IF NOT EXISTS %s ( "uuid" TEXT NOT NULL', table_name);
       index.forEach(function(field) {
         statement +=', "' + field + '" TEXT';
       });
       statement += ')';
 
-      cursor.execute(statement);
+      actions.push( self.db.prepare(statement) );
 
       // Create the index table index.
       var fields = index.join(' ASC, ');
       statement = util.format('CREATE INDEX IF NOT EXISTS "%s_index" on %s (%s ASC)',table_name, table_name, fields);
-      cursor.execute(statement);
+      actions.push( self.db.prepare(statement) );
+    });
+
+    var i=1;
+    var functions = actions.map(function(action) { return function(callback) { action.run(callback); console.log('[init] step', i++, action); }; });
+    _serialize(function() {
+      async.series(functions, cb);
     });
   };
 
-  function _populate_index(obj, cursor, table_name, field_names) {
+  function _populate_index(obj, table_name, field_names) {
     // Get the values of the indexed attributes from the current object.
     var values = [];
     field_names.forEach(function(field_name) {
@@ -217,31 +254,35 @@ var JsonDB = function(filename, callback) {
     qMarks.substr(0, qMarks.length - 2);
 
     // Construct the SQL statement.
-    var statement = 'INSERT OR REPLACE INTO %s ("uuid", "%s") VALUES (%s);', table_name, field_names.join('", "'), qMarks);
+    var statement = util.format('INSERT OR REPLACE INTO %s ("uuid", "%s") VALUES (%s);', table_name, field_names.join('", "'), qMarks);
 
-    cursor.execute(statement, values);
+    return self.db.prepare(statement, values);
   }
 
-  this.save = function(obj, type, commit) {
+  this.save = function(obj, type, cb) {
+    if (typeof type === 'function') {
+      cb = type;
+      type = undefined;
+    }
+
     type = type || obj.__type;
     delete obj.__type;
 
     if (!type) throw new Error('Missing type parameter');
 
-    commit = commit === undefined ? true : commit;
-
     type = type.toLowerCase();
 
     // Persist an object to the database.
-    var cursor = _get_cursor();
-
     var object_id;
     var statement;
+    var actions = [];
 
     if (!obj.id) {
       object_id =  uuid.v4();
       statement = util.format('INSERT INTO %s ("uuid", "data") VALUES (?, ?)', type);
-      cursor.execute(statement, [object_id, self._serializer.stringify(obj)))
+      actions.push(
+        self.db.prepare(statement, [object_id, self._serializer.stringify(obj)])
+        );
     }
     else {
       // Temporarily delete the id so it doesn't get stored.
@@ -249,7 +290,9 @@ var JsonDB = function(filename, callback) {
       delete obj.id;
 
       statement = util.format('UPDATE %s SET "data" = ? WHERE "uuid" = ?', type);
-      cursor.execute(statement, [self._serializer.stringify(obj), object_id]);
+      actions.push(
+        self.db.prepare(statement, [self._serializer.stringify(obj), object_id])
+        );
     }
 
     // Restore the id.
@@ -261,25 +304,29 @@ var JsonDB = function(filename, callback) {
 
     for (table_name in indexTables) {
       field_names = indexTables[table_name];
+      actions.push(
+        _populate_index(obj, type, field_names, callback)
+        );
     }
     
-    _populate_index(cursor, table_name, field_names);
-
-    if (commit) self.commit();
+    var functions = actions.map(function(action) { return function(callback) {action.run(callback)};});
+    _serialize(function() {
+      async.parallel(functions, cb);
+    });
   };
     
-  self.delete = function(obj, type, commit) {
+  self.delete = function(obj, type, cb) {
+    if (typeof type === 'function') {
+      cb = type;
+      type = undefined;
+    }
+
     type = type || obj.__type;
     delete obj.__type;
 
     if (!type) throw new Error('Missing type parameter');
 
-    commit = commit === undefined ? true : commit;
-
     type = type.toLowerCase();
-
-    // Delete an object from the database.
-    var cursor = _get_cursor();
 
     // Get the name of the main table.
     var table_names = [type];
@@ -289,12 +336,24 @@ var JsonDB = function(filename, callback) {
 
     indexTables.forEach(function(indexTable) { table_names.push(indexTable); });
 
+    var actions = [];
+
     // And delete the rows from all of them.
     table_names.forEach(function(table_name) {
       var statement = util.format('DELETE FROM %s WHERE "uuid" == ?', table_name);
-      cursor.execute(statement, [self.id]);
+      actions.push(
+        self.prepare.run(statement, [self.id])
+        );
     });
 
-    if (commit) self.commit();
+    var functions = actions.map(function(action) { return function(callback) {action.run(callback)};});
+    async.parallel(functions, cb);
+  };
+  
+  self.close = function(cb) {
+    self.db.close(cb);
   };
 };
+
+exports.JsonDB = JsonDB;
+
