@@ -57,7 +57,7 @@ var JsonDB = function(filename, callback) {
 
     var min = findMin(indexes, function(index) {
       if (field_set.issuperset(index[0])) {
-        return field_set.difference(index[0]).length;
+        return field_set.difference(index[0]).size();
       }
 
       return Number.NaN;      
@@ -86,8 +86,6 @@ var JsonDB = function(filename, callback) {
     if (!type) throw new Error('Missing type parameter');
     type = type.toLowerCase();
 
-    var queryMethod = first ? 'get' : 'all';
-
     // If we can use an index, we will offload some of the fields to query
     // to the database, and handle the rest here.
     parameters = parameters || {};
@@ -102,6 +100,7 @@ var JsonDB = function(filename, callback) {
       parameters = undefined;
     }
 
+    var queryMethod = first ? 'get' : 'all';
     var index = [];
 
     if (parameters.id) {
@@ -116,12 +115,8 @@ var JsonDB = function(filename, callback) {
 
     function findCallback(err, rows) {
       if (err) {
-        console.log('[find] error - ', err); 
-
         return cb(err);
       }
-
-      console.log('[rows]', rows); 
 
       if (!util.isArray(rows)) rows = [rows];
       var items = [];
@@ -150,7 +145,6 @@ var JsonDB = function(filename, callback) {
       // Look through every row.
 
       statement = util.format('SELECT * FROM %s;', table_name);
-      console.log('[find] ', statement); 
       action = function() {
         return self.db[queryMethod](statement, findCallback);
       };
@@ -199,38 +193,39 @@ var JsonDB = function(filename, callback) {
     }
 
     var actions = [];
-
-    actions.push(
-      self.db.prepare(util.format('CREATE TABLE IF NOT EXISTS %s ( "id" INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, "uuid" TEXT NOT NULL, "data" BLOB NOT NULL);', type))
-      );
-
-    actions.push(
-      self.db.prepare(util.format('CREATE UNIQUE INDEX IF NOT EXISTS "%s_uuid_index" on %s (uuid ASC);', type, type))
-      );
-
     self.indexes[type] = indexes || [];
 
-    self.indexes[type].forEach(function(index) {
-      // Create an index table.
-      var table_name = util.format('%s_%s', type,  index.join('_'));
-      var statement = util.format('CREATE TABLE IF NOT EXISTS %s ( "uuid" TEXT NOT NULL', table_name);
-      index.forEach(function(field) {
-        statement +=', "' + field + '" TEXT';
-      });
-      statement += ')';
+    var count = 0;
+    var stopCondition = 2 * (1 + self.indexes[type].length);
+    var errors = [];
+    var checkIfDone = function(err) {
+      if (err) errors.push(err);
+      count++;
+      if (count === stopCondition) {
+        cb( errors.length > 0 ? errors : null);
+      }
+    }
 
-      actions.push( self.db.prepare(statement) );
-
-      // Create the index table index.
-      var fields = index.join(' ASC, ');
-      statement = util.format('CREATE INDEX IF NOT EXISTS "%s_index" on %s (%s ASC)',table_name, table_name, fields);
-      actions.push( self.db.prepare(statement) );
-    });
-
-    var i=1;
-    var functions = actions.map(function(action) { return function(callback) { action.run(callback); console.log('[init] step', i++, action); }; });
     _serialize(function() {
-      async.series(functions, cb);
+      self.db.run(util.format('CREATE TABLE IF NOT EXISTS %s ( "id" INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, "uuid" TEXT NOT NULL, "data" BLOB NOT NULL);', type), checkIfDone);
+      self.db.run(util.format('CREATE UNIQUE INDEX IF NOT EXISTS "%s_uuid_index" on %s (uuid ASC);', type, type), checkIfDone);
+
+      self.indexes[type].forEach(function(index) {
+        // Create an index table.
+        var table_name = util.format('%s_%s', type,  index.join('_'));
+        var statement = util.format('CREATE TABLE IF NOT EXISTS %s ( "uuid" TEXT NOT NULL', table_name);
+        index.forEach(function(field) {
+          statement +=', "' + field + '" TEXT';
+        });
+        statement += ' )';
+
+        self.db.run(statement, checkIfDone);
+
+        // Create the index table index.
+        var fields = index.join(' ASC, ');
+        statement = util.format('CREATE INDEX IF NOT EXISTS "%s_index" on %s (%s ASC)',table_name, table_name, fields);
+        self.db.run(statement, checkIfDone);
+      });
     });
   };
 
@@ -250,8 +245,8 @@ var JsonDB = function(filename, callback) {
 
     values.unshift(obj.id);
 
-    var qMarks = field_names.map(function() { return '?, '}).join('');
-    qMarks.substr(0, qMarks.length - 2);
+    var qMarks = values.map(function() { return '?, '}).join('');
+    qMarks = qMarks.substr(0, qMarks.length - 2);
 
     // Construct the SQL statement.
     var statement = util.format('INSERT OR REPLACE INTO %s ("uuid", "%s") VALUES (%s);', table_name, field_names.join('", "'), qMarks);
@@ -305,14 +300,12 @@ var JsonDB = function(filename, callback) {
     for (table_name in indexTables) {
       field_names = indexTables[table_name];
       actions.push(
-        _populate_index(obj, type, field_names, callback)
+        _populate_index(obj, table_name, field_names, callback)
         );
     }
     
-    var functions = actions.map(function(action) { return function(callback) {action.run(callback)};});
-    _serialize(function() {
-      async.parallel(functions, cb);
-    });
+    var functions = actions.map(function(action) { return function(callback) { action.run(callback)};});
+    async.parallel(functions, cb);
   };
     
   self.delete = function(obj, type, cb) {
@@ -351,7 +344,9 @@ var JsonDB = function(filename, callback) {
   };
   
   self.close = function(cb) {
-    self.db.close(cb);
+    _serialize(function() {
+      self.db.close(cb);
+    });
   };
 };
 
