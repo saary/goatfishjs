@@ -67,6 +67,7 @@ async.series([
 * [node-sqlite3] (https://github.com/developmentseed/node-sqlite3)
 * [async](https://github.com/caolan/async/)
 * [msgpack](https://github.com/creationix/msgpack-js)
+* [node-uuid](https://github.com/broofa/node-uuid)
  
 # License
 MIT
