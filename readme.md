@@ -65,6 +65,8 @@ async.series([
 # Recognition
 * Stavros Korokithakis - [goatfish](https://github.com/stochastic-technologies/goatfish)
 * [node-sqlite3] (https://github.com/developmentseed/node-sqlite3)
+* [async](https://github.com/caolan/async/)
+* [msgpack](https://github.com/creationix/msgpack-js)
  
 # License
 MIT
