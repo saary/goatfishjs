@@ -3,6 +3,7 @@ var uuid = require('node-uuid');
 var sets = require('simplesets');
 var util = require('util');
 var async = require('async');
+var msgpack = require('msgpack');
 
 var findMin = function(list, iterator) {
   var m = Number.MAX_VALUE;
@@ -23,8 +24,26 @@ var findMin = function(list, iterator) {
 
 var noop = function() {};
 
+var JSONSerializer = {
+  serialize : function(obj) {
+    return JSON.stringify(obj);
+  },
+  deserialize : function(buffer) {
+    return JSON.parse(buffer);
+  }
+};
+
+var MsgPackSerializer = {
+  serialize : function(obj) {
+    return msgpack.encode(obj);
+  },
+  deserialize : function(buffer) {
+    return msgpack.decode(buffer);
+  }
+};
+
 var JsonDB = function(filename, callback) {
-  this._serializer = JSON;
+  this._serializer = MsgPackSerializer;
   this.indexes = {};
   this.db = new sqlite3.Database(filename, sqlite3.OPEN_CREATE | sqlite3.OPEN_READWRITE, callback);
 
@@ -121,7 +140,7 @@ var JsonDB = function(filename, callback) {
       if (!util.isArray(rows)) rows = [rows];
       var items = [];
       rows.forEach(function(row) {
-        var item = self._serializer.parse(row.data);
+        var item = self._serializer.deserialize(row.data);
         item.__type = type;
 
         var allMatch = true;
@@ -276,7 +295,7 @@ var JsonDB = function(filename, callback) {
       object_id =  uuid.v4();
       statement = util.format('INSERT INTO %s ("uuid", "data") VALUES (?, ?)', type);
       actions.push(
-        self.db.prepare(statement, [object_id, self._serializer.stringify(obj)])
+        self.db.prepare(statement, [object_id, self._serializer.serialize(obj)])
         );
     }
     else {
@@ -286,7 +305,7 @@ var JsonDB = function(filename, callback) {
 
       statement = util.format('UPDATE %s SET "data" = ? WHERE "uuid" = ?', type);
       actions.push(
-        self.db.prepare(statement, [self._serializer.stringify(obj), object_id])
+        self.db.prepare(statement, [self._serializer.serialize(obj), object_id])
         );
     }
 
