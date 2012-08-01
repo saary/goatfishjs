@@ -1,6 +1,5 @@
 var JsonDB = require('./index').JsonDB;
 var async = require('async');
-var sqlite3 = require('sqlite3');
 
 var db;
 var limit = 100;
