@@ -96,6 +96,59 @@ var JsonDB = function(filename, callback) {
     return self.db.serialize(cb);
   }
 
+  function _getOperators(parameters) {
+    var operators = {};
+    for (var key in parameters) {
+      var results = /(.*)(<|<=|>|>=|~=)$/ig.exec(key);
+      var parameter = key;
+      var operator = '=';
+      if (results) {
+        parameter = results[1];
+        operator = results[2];
+      }
+
+      operators[parameter] = { op: operator, val: parameters[key] };
+    }
+
+    return operators;
+  }
+
+  function _testOperator(operator, val) {
+    if (operator.op === '=') return val == operator.val;
+    if (operator.op === '<') return val < operator.val;
+    if (operator.op === '<=') return val <= operator.val;
+    if (operator.op === '>') return val > operator.val;
+    if (operator.op === '>=') return val >= operator.val;
+    if (operator.op === '~=') return val.indexOf(operator.val) >= 0;
+
+    return false;
+  }
+
+  function _buildWherePart(operators, index) {
+    var wherePart = [];
+    var bindings = [];
+
+    index.forEach(function(field) {
+      var operator = operators[field].op;
+      if (operator === '~=') {
+        operator = 'LIKE'
+        bindings.push('%' + operators[field].val + '%');
+      } 
+      else {
+        bindings.push(operators[field].val);
+      }
+
+      wherePart.push(util.format('%s %s ? AND', field, operator));
+    });
+
+    if (wherePart.length > 0) {
+      var last = wherePart[index.length - 1];
+      wherePart[index.length - 1] = last.substr(0, last.length - 4);
+    }
+
+    return [wherePart.join(' '), bindings];
+  }
+
   self.find_one = function(type, parameters, cb) {
     // Return just one item.
     self.find(type, parameters, true, cb);
@@ -120,13 +173,14 @@ var JsonDB = function(filename, callback) {
     }
 
     var queryMethod = first ? 'get' : 'all';
+    var operators = _getOperators(parameters);
     var index = [];
 
     if (parameters.id) {
       index = ['id'];
     }
     else {
-      index = _get_largest_index(type, Object.keys(parameters));
+      index = _get_largest_index(type, Object.keys(operators));
     }
 
     var table_name = type;
@@ -144,8 +198,8 @@ var JsonDB = function(filename, callback) {
         item.__type = type;
 
         var allMatch = true;
-        for (var field in parameters) {
-          if (item[field] !== parameters[field]) {
+        for (var field in operators) {
+          if (!_testOperator(operators[field], item[field])) {
             allMatch = false;
           }
         }
@@ -180,12 +234,14 @@ var JsonDB = function(filename, callback) {
       };
     }
     else {
+      var wherePart = _buildWherePart(operators, index);
       statement = util.format('SELECT x.id, x.uuid, x.data FROM %s x INNER JOIN %s y ON x.uuid = y.uuid WHERE %s;', 
         table_name,
         table_name + '_' + index.join('_'),
-        index.join(' = ? AND ') + ' = ?');
+        wherePart[0]);
 
-      var paramBindings = index.map(function(field) { return parameters[field]});
+      // console.log('SQL', statement);
+
       // Delete the (now) unnecessary parameters, because the database
       // made sure they match.
       for (var field in index) {
@@ -193,7 +249,7 @@ var JsonDB = function(filename, callback) {
       }
           
       action = function() {
-        return self.db[queryMethod](statement, paramBindings, findCallback);
+        return self.db[queryMethod](statement, wherePart[1], findCallback);
       };
     }
 
@@ -212,7 +268,16 @@ var JsonDB = function(filename, callback) {
     }
 
     var actions = [];
-    self.indexes[type] = indexes || [];
+    indexes = indexes || [];
+
+    // store only flat indexes without the field type hints
+    self.indexes[type] = indexes.map(function(index) {
+      if (typeof index === 'string') return [index];
+      if (typeof index === 'object') return Object.keys(index);
+      if (util.isArray(index)) return index;
+
+      return [];
+    });
 
     var count = 0;
     var stopCondition = 2 * (1 + self.indexes[type].length);
@@ -229,20 +294,47 @@ var JsonDB = function(filename, callback) {
       self.db.run(util.format('CREATE TABLE IF NOT EXISTS %s ( "id" INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, "uuid" TEXT NOT NULL, "data" BLOB NOT NULL);', type), checkIfDone);
       self.db.run(util.format('CREATE UNIQUE INDEX IF NOT EXISTS "%s_uuid_index" on %s (uuid ASC);', type, type), checkIfDone);
 
-      self.indexes[type].forEach(function(index) {
+      indexes.forEach(function(index) {
         // Create an index table.
-        var table_name = util.format('%s_%s', type,  index.join('_'));
+        var fields;
+
+        if (typeof index === 'string') {
+          fields = [ index ];
+        }
+        else if (typeof index === 'object') {
+          fields = Object.keys(index);
+        } 
+        else if (util.isArray(index)) {
+          fields = index;
+        }
+        else {
+          return;
+        }
+        
+        var table_name = util.format('%s_%s', type,  fields.join('_'));
         var statement = util.format('CREATE TABLE IF NOT EXISTS %s ( "uuid" TEXT NOT NULL', table_name);
-        index.forEach(function(field) {
-          statement +=', "' + field + '" TEXT';
+        fields.forEach(function(field) {
+          var fieldType = index[field] || '';
+          if (['int', 'integer', 'long', 'date'].indexOf(fieldType.toLowerCase()) >= 0) {
+            fieldType = 'INTEGER';
+          }
+          else if (['float', 'real'].indexOf(fieldType.toLowerCase()) >= 0) {
+            fieldType = 'REAL';
+          }
+          else {
+            fieldType = 'TEXT';
+          }
+          statement +=', "' + field + '" ' + fieldType;
         });
         statement += ' )';
+
+        console.log('INDEX', statement);
 
         self.db.run(statement, checkIfDone);
 
         // Create the index table index.
-        var fields = index.join(' ASC, ');
-        statement = util.format('CREATE INDEX IF NOT EXISTS "%s_index" on %s (%s ASC)',table_name, table_name, fields);
+        var fieldsPart = fields.join(' ASC, ');
+        statement = util.format('CREATE INDEX IF NOT EXISTS "%s_index" on %s (%s ASC)',table_name, table_name, fieldsPart);
         self.db.run(statement, checkIfDone);
       });
     });
