@@ -2,7 +2,7 @@ var JsonDB = require('./index').JsonDB;
 var async = require('async');
 
 var db;
-var limit = 100;
+var limit = 5;
 
 async.series([
   function(callback) {
@@ -12,7 +12,7 @@ async.series([
     });
   },
   function(callback) {
-    db.initialize('obj', [['a']], function(err) {
+    db.initialize('obj', [{a: 'int', c: 'text'}], function(err) {
       if (err) {
         console.error('Error initializing db', err);
       }
@@ -31,7 +31,7 @@ async.series([
       function() { return val > limit; },
       function(ucb) { 
         var start = Date.now();
-        db.save({ a: val, b: val, lat: 37.11111111111, lon: 44.44444444444 }, 'obj', function(err) {
+        db.save({ a: val, b: val, c: 'aaa' + val.toString(), lat: 37.11111111111, lon: 44.44444444444 }, 'obj', function(err) {
           ucb(err);
           sum += Date.now() - start;
           val++;
@@ -51,8 +51,8 @@ async.series([
       function() { return count > limit; },
       function(ucb) {
         var start = Date.now();
-        db.find('obj', { b: 50 }, function(err, items) {
-          if (items[0].b !== 50) throw new Error('item not found');
+        db.find('obj', { b: 5 }, function(err, items) {
+          if (items[0].b !== 5) throw new Error('item not found');
           sum += Date.now() - start;
           ucb(err);
         });
@@ -72,8 +72,8 @@ async.series([
       function() { return count > limit; },
       function(ucb) {
         var start = Date.now();
-        db.find('obj', { a: 50 }, function(err, items) {
-          if (items[0].a !== 50) throw new Error('item not found');
+        db.find('obj', { 'a': 5, 'c>=': 'a5' }, function(err, items) {
+          if (items[0].a !== 5) throw new Error('item not found');
           sum += Date.now() - start;
           ucb(err);
         });
