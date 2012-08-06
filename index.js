@@ -286,7 +286,7 @@ var JsonDB = function(filename, callback) {
       if (err) errors.push(err);
       count++;
       if (count === stopCondition) {
-        self.db..run("COMMIT");
+        self.db.run("COMMIT");
 
         cb( errors.length > 0 ? errors : null);
       }
