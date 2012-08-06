@@ -293,7 +293,7 @@ var JsonDB = function(filename, callback) {
     }
 
     _serialize(function() {
-      self.db..run("BEGIN");
+      self.db.run("BEGIN");
       self.db.run(util.format('CREATE TABLE IF NOT EXISTS %s ( "id" INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, "uuid" TEXT NOT NULL, "data" BLOB NOT NULL);', type), checkIfDone);
       self.db.run(util.format('CREATE UNIQUE INDEX IF NOT EXISTS "%s_uuid_index" on %s (uuid ASC);', type, type), checkIfDone);
 
