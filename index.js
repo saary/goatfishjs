@@ -45,6 +45,7 @@ var MsgPackSerializer = {
 var JsonDB = function(filename, callback) {
   this._serializer = MsgPackSerializer;
   this.indexes = {};
+  this.filename = filename;
   this.db = new sqlite3.Database(filename, sqlite3.OPEN_CREATE | sqlite3.OPEN_READWRITE, callback);
 
   var self = this;
