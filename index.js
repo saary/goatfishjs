@@ -160,8 +160,6 @@ var JsonDB = function(filename, callback) {
 
     // If we can use an index, we will offload some of the fields to query
     // to the database, and handle the rest here.
-    parameters = parameters || {};
-    cb = cb || noop;
     if (typeof first === 'function') {
       cb = first;
       first = undefined;
@@ -171,6 +169,9 @@ var JsonDB = function(filename, callback) {
       cb = parameters;
       parameters = undefined;
     }
+
+    parameters = parameters || {};
+    cb = cb || noop;
 
     var queryMethod = first ? 'get' : 'all';
     var operators = _getOperators(parameters);
