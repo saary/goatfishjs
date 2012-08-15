@@ -470,8 +470,10 @@ var JsonDB = function(filename, callback) {
     });
   };
 
-  self.flush = function(cb) {
+  self.flush = function(beforeReopenAction, cb) {
+    beforeReopenAction = beforeReopenAction || noop;
     self.close(function() {
+      beforeReopenAction();
       _openDb(filename, cb);
     });
   };
