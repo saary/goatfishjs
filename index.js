@@ -46,9 +46,14 @@ var JsonDB = function(filename, callback) {
   this._serializer = MsgPackSerializer;
   this.indexes = {};
   this.filename = filename;
-  this.db = new sqlite3.Database(filename, sqlite3.OPEN_CREATE | sqlite3.OPEN_READWRITE, callback);
 
   var self = this;
+
+  function _openDb(filename, callback) {
+    self.db = new sqlite3.Database(filename, sqlite3.OPEN_CREATE | sqlite3.OPEN_READWRITE, callback);
+  }
+
+  _openDb(filename, callback);
 
   // Get the names for the index tables in this model.
   
@@ -462,6 +467,12 @@ var JsonDB = function(filename, callback) {
   self.close = function(cb) {
     _serialize(function() {
       self.db.close(cb);
+    });
+  };
+
+  self.flush = function(cb) {
+    self.close(function() {
+      _openDb(filename, cb);
     });
   };
 };
