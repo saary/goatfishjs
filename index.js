@@ -203,6 +203,7 @@ var JsonDB = function(filename, callback) {
       rows.forEach(function(row) {
         var item = self._serializer.deserialize(row.data);
         item.__type = type;
+        item.id = row.id;
 
         var allMatch = true;
         for (var field in operators) {
