@@ -2,7 +2,7 @@
   "author": "Saar Yahalom <saary@microsoft.com>",
   "name": "goatfishjs",
   "description": "A JSON data store on top of sqlite",
-  "version": "0.1",
+  "version": "0.1.0",
   "repository": {
     "type": "git",
     "url": "git://github.com/saary/goatfishjs.git"
